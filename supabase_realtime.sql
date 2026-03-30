@@ -1,0 +1,3 @@
+-- Enable realtime for the heartbeat channel (we don't need a table for this, we can use Supabase Broadcast)
+-- Actually, Supabase Broadcast doesn't require a table, just the right RLS policies if using authenticated users.
+-- Since we want public visitors to listen to the heartbeat, we just need to ensure the channel is accessible.

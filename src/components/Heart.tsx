@@ -10,10 +10,6 @@ export default function Heart() {
   const materialRef = useRef<THREE.MeshPhysicalMaterial>(null);
   const scrollCount = useExperienceStore((state) => state.scrollCount);
   
-  // 80 BPM = 1.33 beats per second.
-  // One beat every 0.75 seconds.
-  const beatDuration = 60 / 80;
-  
   // Target rotation based on scroll count
   const targetRotationY = scrollCount * (Math.PI / 16);
 
@@ -58,6 +54,8 @@ export default function Heart() {
 
     // Heartbeat animation
     const t = state.clock.elapsedTime;
+    const placeholderBpm = 76 + Math.sin(t * 0.12) * 4; // restrained range: 72-80 BPM
+    const beatDuration = 60 / placeholderBpm;
     
     // Create a double-beat pattern (systole/diastole)
     // We use modulo to loop every `beatDuration`
