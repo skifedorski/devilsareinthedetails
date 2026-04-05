@@ -8,6 +8,7 @@ import { useExperienceStore } from '@/store/useExperienceStore';
 export default function Heart() {
   const meshRef = useRef<THREE.Mesh>(null);
   const materialRef = useRef<THREE.MeshPhysicalMaterial>(null);
+  const elapsedRef = useRef(0);
   const scrollCount = useExperienceStore((state) => state.scrollCount);
   
   // Target rotation based on scroll count
@@ -41,8 +42,9 @@ export default function Heart() {
     return geo;
   }, []);
 
-  useFrame((state, delta) => {
+  useFrame((_, delta) => {
     if (!meshRef.current) return;
+    elapsedRef.current += delta;
 
     // Smoothly interpolate current rotation towards target rotation
     meshRef.current.rotation.y = THREE.MathUtils.damp(
@@ -53,7 +55,7 @@ export default function Heart() {
     );
 
     // Heartbeat animation
-    const t = state.clock.elapsedTime;
+    const t = elapsedRef.current;
     const placeholderBpm = 76 + Math.sin(t * 0.12) * 4; // restrained range: 72-80 BPM
     const beatDuration = 60 / placeholderBpm;
     
