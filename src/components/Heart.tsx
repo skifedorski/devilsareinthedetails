@@ -1,101 +1,130 @@
 'use client';
 
-import { useRef, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
+import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useExperienceStore } from '@/store/useExperienceStore';
 
+function heartbeatScale(t: number, bpm = 72) {
+  const beatDur = 60 / bpm;
+  const phase = (t % beatDur) / beatDur;
+  let s = 1;
+  if (phase < 0.12) {
+    s += Math.sin((phase * Math.PI) / 0.12) * 0.045;
+  } else if (phase > 0.22 && phase < 0.36) {
+    s += Math.sin(((phase - 0.22) * Math.PI) / 0.14) * 0.022;
+  }
+  return s;
+}
+
+function meshToWirePoints(root: THREE.Object3D) {
+  const group = new THREE.Group();
+  const lineMat = new THREE.LineBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const pointMat = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 0.012,
+    sizeAttenuation: true,
+    transparent: true,
+    opacity: 0.95,
+    depthTest: true,
+  });
+
+  root.updateWorldMatrix(true, true);
+  root.traverse((child) => {
+    if (!('isMesh' in child) || !(child as THREE.Mesh).isMesh) return;
+    const mesh = child as THREE.Mesh;
+    if (!mesh.geometry) return;
+    if (mesh.name === 'Cube') return;
+
+    let geom = mesh.geometry.clone();
+    geom.applyMatrix4(mesh.matrixWorld);
+    if (geom.index) {
+      const ni = geom.toNonIndexed();
+      geom.dispose();
+      geom = ni;
+    }
+    const welded = mergeVertices(geom, 1e-4);
+    geom.dispose();
+    geom = welded;
+
+    const wireframe = new THREE.WireframeGeometry(geom);
+    const lines = new THREE.LineSegments(wireframe, lineMat.clone());
+    group.add(lines);
+
+    const pointPositions = geom.getAttribute('position');
+    const pointsGeom = new THREE.BufferGeometry();
+    pointsGeom.setAttribute('position', pointPositions.clone());
+    const pts = new THREE.Points(pointsGeom, pointMat.clone());
+    group.add(pts);
+
+    geom.dispose();
+  });
+
+  return group;
+}
+
+function normalizeAndBuildGraph(scene: THREE.Object3D) {
+  const root = scene.clone(true);
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+  root.position.sub(center);
+  root.scale.setScalar(1.6 / maxDim);
+  root.updateMatrixWorld(true);
+  return meshToWirePoints(root);
+}
+
 export default function Heart() {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const materialRef = useRef<THREE.MeshPhysicalMaterial>(null);
+  const { scene } = useGLTF('/heart.glb');
+  const groupRef = useRef<THREE.Group>(null);
   const elapsedRef = useRef(0);
   const scrollCount = useExperienceStore((state) => state.scrollCount);
-  
-  // Target rotation based on scroll count
   const targetRotationY = scrollCount * (Math.PI / 16);
 
-  // Deform a sphere to look slightly more like a heart
-  // This is a low-fi placeholder until a real .glb is provided
-  const geometry = useMemo(() => {
-    const geo = new THREE.SphereGeometry(1, 64, 64);
-    const posAttribute = geo.attributes.position;
-    const v = new THREE.Vector3();
-    
-    for (let i = 0; i < posAttribute.count; i++) {
-      v.fromBufferAttribute(posAttribute, i);
-      
-      // Simple math deformation to make it slightly heart-like
-      const x = v.x;
-      const y = v.y;
-      const z = v.z;
-      
-      // Heart equation approximation
-      v.y = y + Math.abs(x) * Math.sqrt((8 - Math.abs(x)) / 50) * 1.5;
-      v.z = z * (1 - Math.abs(x) / 2);
-      
-      posAttribute.setXYZ(i, v.x, v.y, v.z);
-    }
-    
-    geo.computeVertexNormals();
-    // Move it down slightly to center it after deformation
-    geo.translate(0, -0.5, 0); 
-    return geo;
-  }, []);
+  const graph = useMemo(() => normalizeAndBuildGraph(scene), [scene]);
+
+  useEffect(() => {
+    return () => {
+      graph.traverse((obj) => {
+        const o = obj as THREE.Mesh;
+        o.geometry?.dispose();
+        const mat = o.material;
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+        else if (mat) mat.dispose();
+      });
+    };
+  }, [graph]);
 
   useFrame((_, delta) => {
-    if (!meshRef.current) return;
+    if (!groupRef.current) return;
     elapsedRef.current += delta;
+    const t = elapsedRef.current;
 
-    // Smoothly interpolate current rotation towards target rotation
-    meshRef.current.rotation.y = THREE.MathUtils.damp(
-      meshRef.current.rotation.y,
+    groupRef.current.rotation.y = THREE.MathUtils.damp(
+      groupRef.current.rotation.y,
       targetRotationY,
-      4, // lambda/speed
+      4,
       delta
     );
-
-    // Heartbeat animation
-    const t = elapsedRef.current;
-    const placeholderBpm = 76 + Math.sin(t * 0.12) * 4; // restrained range: 72-80 BPM
-    const beatDuration = 60 / placeholderBpm;
-    
-    // Create a double-beat pattern (systole/diastole)
-    // We use modulo to loop every `beatDuration`
-    const phase = (t % beatDuration) / beatDuration;
-    
-    // Math to create a sharp pump and a smaller secondary pump
-    let scale = 1;
-    if (phase < 0.15) {
-      // First beat (sharp)
-      scale = 1 + Math.sin(phase * Math.PI / 0.15) * 0.08;
-    } else if (phase > 0.25 && phase < 0.4) {
-      // Second beat (smaller)
-      scale = 1 + Math.sin((phase - 0.25) * Math.PI / 0.15) * 0.04;
-    }
-
-    meshRef.current.scale.setScalar(scale);
-    
-    // Very slow continuous idle rotation on top of the scroll rotation
-    // We apply it to the group or just let it be. Actually, if we damp to targetRotationY, 
-    // adding a continuous rotation will fight the damp. Let's just use the scroll rotation.
+    groupRef.current.rotation.x = Math.sin(t * 0.35) * 0.05;
+    groupRef.current.rotation.z = Math.sin(t * 0.28) * 0.03;
+    groupRef.current.scale.setScalar(heartbeatScale(t, 72));
+    groupRef.current.position.y = Math.sin(t * 0.5) * 0.03;
   });
 
   return (
-    <mesh 
-      ref={meshRef} 
-      geometry={geometry}
-    >
-      <meshPhysicalMaterial 
-        ref={materialRef}
-        color="#4a0404" // Deep crimson
-        emissive="#1a0000"
-        roughness={0.15} // Wet look
-        metalness={0.1}
-        clearcoat={0.3}
-        clearcoatRoughness={0.1}
-        transmission={0.2}
-        thickness={0.5}
-      />
-    </mesh>
+    <group ref={groupRef}>
+      <primitive object={graph} />
+    </group>
   );
 }
+
+useGLTF.preload('/heart.glb');

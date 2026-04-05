@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { Environment, Float, ContactShadows } from '@react-three/drei';
+import { Environment, ContactShadows } from '@react-three/drei';
 import Heart from './Heart';
 import { useExperienceStore } from '@/store/useExperienceStore';
 
@@ -79,14 +79,9 @@ export default function Experience() {
           far={4} 
         />
 
-        <Float
-          speed={1.5} // Animation speed
-          rotationIntensity={0.1} // XYZ rotation intensity
-          floatIntensity={0.2} // Up/down float intensity
-          floatingRange={[-0.1, 0.1]} // Range of y-axis values
-        >
+        <Suspense fallback={null}>
           <Heart />
-        </Float>
+        </Suspense>
         
         <Environment preset="studio" environmentIntensity={0.1} />
       </Canvas>
