@@ -4,127 +4,163 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { useExperienceStore } from '@/store/useExperienceStore';
 
-function heartbeatScale(t: number, bpm = 72) {
-  const beatDur = 60 / bpm;
-  const phase = (t % beatDur) / beatDur;
-  let s = 1;
-  if (phase < 0.12) {
-    s += Math.sin((phase * Math.PI) / 0.12) * 0.045;
-  } else if (phase > 0.22 && phase < 0.36) {
-    s += Math.sin(((phase - 0.22) * Math.PI) / 0.14) * 0.022;
-  }
-  return s;
-}
-
-function meshToWirePoints(root: THREE.Object3D) {
-  const group = new THREE.Group();
-  const lineMat = new THREE.LineBasicMaterial({
-    color: 0xffffff,
-    transparent: true,
-    opacity: 0.85,
-  });
-  const pointMat = new THREE.PointsMaterial({
-    color: 0xffffff,
-    size: 0.012,
-    sizeAttenuation: true,
-    transparent: true,
-    opacity: 0.95,
-    depthTest: true,
-  });
-
-  root.updateWorldMatrix(true, true);
-  root.traverse((child) => {
-    if (!('isMesh' in child) || !(child as THREE.Mesh).isMesh) return;
-    const mesh = child as THREE.Mesh;
-    if (!mesh.geometry) return;
-    if (mesh.name === 'Cube') return;
-
-    let geom = mesh.geometry.clone();
-    geom.applyMatrix4(mesh.matrixWorld);
-    if (geom.index) {
-      const ni = geom.toNonIndexed();
-      geom.dispose();
-      geom = ni;
-    }
-    const welded = mergeVertices(geom, 1e-4);
-    geom.dispose();
-    geom = welded;
-
-    const wireframe = new THREE.WireframeGeometry(geom);
-    const lines = new THREE.LineSegments(wireframe, lineMat.clone());
-    group.add(lines);
-
-    const pointPositions = geom.getAttribute('position');
-    const pointsGeom = new THREE.BufferGeometry();
-    pointsGeom.setAttribute('position', pointPositions.clone());
-    const pts = new THREE.Points(pointsGeom, pointMat.clone());
-    group.add(pts);
-
-    geom.dispose();
-  });
-
-  return group;
-}
-
-function normalizeAndBuildGraph(scene: THREE.Object3D) {
-  const root = scene.clone(true);
-  root.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root);
-  const center = box.getCenter(new THREE.Vector3());
-  const size = box.getSize(new THREE.Vector3());
-  const maxDim = Math.max(size.x, size.y, size.z, 0.001);
-  root.position.sub(center);
-  root.scale.setScalar(1.6 / maxDim);
-  root.updateMatrixWorld(true);
-  return meshToWirePoints(root);
-}
+// Each throttled input event rotates the heart by this fixed step.
+// 198 events × 60° = 11 880° total to unlock the reflection scene.
+const STEP_DEG = 60;
+const STEP_RAD = STEP_DEG * (Math.PI / 180);
+const THRESHOLD_DEG = 11_880;
+const THROTTLE_MS = 100;
 
 export default function Heart() {
-  const { scene } = useGLTF('/heart.glb');
   const groupRef = useRef<THREE.Group>(null);
+  const { scene: gltfScene, animations } = useGLTF('/heart_animated.glb');
+  const mixerRef = useRef<THREE.AnimationMixer | null>(null);
+  const introReady = useExperienceStore((state) => state.introReady);
   const elapsedRef = useRef(0);
-  const scrollCount = useExperienceStore((state) => state.scrollCount);
-  const targetRotationY = scrollCount * (Math.PI / 16);
 
-  const graph = useMemo(() => normalizeAndBuildGraph(scene), [scene]);
+  // Accumulated target quaternion — updated on every throttled scroll event.
+  const targetQuatRef = useRef(new THREE.Quaternion());
+  // Running total of rotation (degrees) used to unlock the next scene.
+  const totalDegreesRef = useRef(0);
+  // Timestamp of the last accepted scroll event (throttle gate).
+  const lastScrollRef = useRef(0);
+  // Last touch position for mobile swipe tracking.
+  const prevTouchRef = useRef({ x: 0, y: 0 });
 
+  // Apply wireframe material and compute bounding box before first render.
+  const { center, scale } = useMemo(() => {
+    gltfScene.updateWorldMatrix(true, true);
+    const box = new THREE.Box3();
+
+    gltfScene.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) return;
+
+      const hasMorphs = (mesh.geometry.morphAttributes.position?.length ?? 0) > 0;
+
+      if (hasMorphs) {
+        mesh.material = new THREE.MeshBasicMaterial({
+          wireframe: true,
+          color: 0xffffff,
+        });
+        const meshBox = new THREE.Box3().setFromObject(mesh);
+        box.union(meshBox);
+      } else {
+        mesh.visible = false;
+      }
+    });
+
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+    return { center, scale: 1.6 / maxDim };
+  }, [gltfScene]);
+
+  // Bind mixer directly to the GLB scene so tracks resolve immediately.
   useEffect(() => {
+    const mixer = new THREE.AnimationMixer(gltfScene);
+    mixerRef.current = mixer;
+
+    animations.forEach((clip) => {
+      const action = mixer.clipAction(clip);
+      action.setLoop(THREE.LoopRepeat, Infinity);
+      action.play();
+    });
+
     return () => {
-      graph.traverse((obj) => {
-        const o = obj as THREE.Mesh;
-        o.geometry?.dispose();
-        const mat = o.material;
-        if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-        else if (mat) mat.dispose();
-      });
+      mixer.stopAllAction();
+      mixer.uncacheRoot(gltfScene);
+      mixerRef.current = null;
     };
-  }, [graph]);
+  }, [gltfScene, animations]);
+
+  // Scroll / touch → quaternion rotation across all axes.
+  // deltaX (horizontal scroll) rotates around the X axis (tilt).
+  // deltaY (vertical scroll)   rotates around the Y axis (spin).
+  // Diagonal scroll rotates around the combined axis → truly free 3-D rotation.
+  useEffect(() => {
+    const applyRotation = (dx: number, dy: number) => {
+      const { scene, introReady } = useExperienceStore.getState();
+      if (scene !== 'heart' || !introReady) return;
+
+      const now = Date.now();
+      if (now - lastScrollRef.current < THROTTLE_MS) return;
+      lastScrollRef.current = now;
+
+      const len = Math.hypot(dx, dy);
+      if (len < 1) return;
+
+      // Build a unit axis from the scroll vector, then rotate by the fixed step.
+      // premultiply → world-space rotation (trackball feel).
+      const axis = new THREE.Vector3(dx / len, dy / len, 0);
+      const q = new THREE.Quaternion().setFromAxisAngle(axis, STEP_RAD);
+      targetQuatRef.current.premultiply(q);
+
+      totalDegreesRef.current += STEP_DEG;
+      if (totalDegreesRef.current >= THRESHOLD_DEG) {
+        useExperienceStore.getState().setScene('reflection');
+      }
+    };
+
+    const handleWheel = (e: WheelEvent) => applyRotation(e.deltaX, e.deltaY);
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        prevTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - prevTouchRef.current.x;
+      const dy = e.touches[0].clientY - prevTouchRef.current.y;
+      prevTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      applyRotation(dx, dy);
+    };
+
+    window.addEventListener('wheel', handleWheel, { passive: true });
+    window.addEventListener('touchstart', handleTouchStart, { passive: true });
+    window.addEventListener('touchmove', handleTouchMove, { passive: true });
+
+    return () => {
+      window.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+    };
+  }, []);
 
   useFrame((_, delta) => {
-    if (!groupRef.current) return;
-    elapsedRef.current += delta;
-    const t = elapsedRef.current;
+    // Heartbeat animation plays in all scenes.
+    mixerRef.current?.update(delta);
 
-    groupRef.current.rotation.y = THREE.MathUtils.damp(
-      groupRef.current.rotation.y,
-      targetRotationY,
-      4,
-      delta
-    );
-    groupRef.current.rotation.x = Math.sin(t * 0.35) * 0.05;
-    groupRef.current.rotation.z = Math.sin(t * 0.28) * 0.03;
-    groupRef.current.scale.setScalar(heartbeatScale(t, 72));
-    groupRef.current.position.y = Math.sin(t * 0.5) * 0.03;
+    if (!groupRef.current) return;
+
+    // All motion gated: nothing moves while the opening text is visible.
+    const { scene: currentScene, introReady: ready } = useExperienceStore.getState();
+    if (currentScene !== 'heart' || !ready) return;
+
+    elapsedRef.current += delta;
+
+    // Smoothly slerp toward the accumulated target quaternion.
+    // λ = 5 → snappy but not instant; feels physically connected to the scroll.
+    const alpha = 1 - Math.exp(-5 * delta);
+    groupRef.current.quaternion.slerp(targetQuatRef.current, alpha);
+
+    // Subtle vertical float to keep the heart feeling alive while idle.
+    groupRef.current.position.y = Math.sin(elapsedRef.current * 0.5) * 0.03;
   });
 
   return (
     <group ref={groupRef}>
-      <primitive object={graph} />
+      <group scale={scale}>
+        <group position={[-center.x, -center.y, -center.z]}>
+          <primitive object={gltfScene} />
+        </group>
+      </group>
     </group>
   );
 }
 
-useGLTF.preload('/heart.glb');
+useGLTF.preload('/heart_animated.glb');

@@ -10,16 +10,15 @@ export type SceneState =
 
 interface ExperienceState {
   scene: SceneState;
-  scrollCount: number;
+  // True only after the opening text's exit animation has fully completed.
+  introReady: boolean;
   setScene: (scene: SceneState) => void;
-  incrementScroll: () => void;
-  resetScroll: () => void;
+  setIntroReady: () => void;
 }
 
 export const useExperienceStore = create<ExperienceState>((set) => ({
   scene: 'loading',
-  scrollCount: 0,
+  introReady: false,
   setScene: (scene) => set({ scene }),
-  incrementScroll: () => set((state) => ({ scrollCount: state.scrollCount + 1 })),
-  resetScroll: () => set({ scrollCount: 0 }),
+  setIntroReady: () => set({ introReady: true }),
 }));

@@ -19,7 +19,7 @@ interface FormErrors {
 }
 
 export default function Overlay() {
-  const { scene, setScene } = useExperienceStore();
+  const { scene, setScene, setIntroReady } = useExperienceStore();
   const [reflection, setReflection] = useState('');
   const [wantsFeedback, setWantsFeedback] = useState(false);
   const [email, setEmail] = useState('');
@@ -124,7 +124,16 @@ export default function Overlay() {
 
   return (
     <div className="fixed inset-0 pointer-events-none z-10 flex items-center justify-center">
-      <AnimatePresence mode="wait">
+      <AnimatePresence
+        mode="wait"
+        onExitComplete={() => {
+          // Fires at the exact frame the exit animation finishes.
+          // When the opening text has just fully vanished, unlock the intro spin.
+          if (useExperienceStore.getState().scene === 'heart') {
+            setIntroReady();
+          }
+        }}
+      >
         
         {/* SCENE 1: Opening Question */}
         {scene === 'opening' && (
